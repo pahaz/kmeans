@@ -54,6 +54,7 @@ Point RandomPointUniform(size_t dimensions, double space_size) {
 }
 
 void WritePoint(Point point, ofstream& out) {
+    // out << data_size << dimensions;
     for (size_t i = 0; i < point.size()-1; ++i) {
         out << point[i] << " ";
     }

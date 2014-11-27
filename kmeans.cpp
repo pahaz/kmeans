@@ -5,14 +5,17 @@
 #include <stdlib.h>
 #include <vector>
 #include <sys/time.h>
+#include <omp.h>
 
 using namespace std;
 
 struct timeval start, stop;
+
 typedef vector<double> Point;
 typedef vector<Point> Points;
 
-// Gives random number in range [0..max_value]
+
+// get random [0..max_value]
 unsigned int UniformRandom(unsigned int max_value) {
     unsigned int rnd = ((static_cast<unsigned int>(rand()) % 32768) << 17) |
                        ((static_cast<unsigned int>(rand()) % 32768) << 2) |
@@ -22,8 +25,8 @@ unsigned int UniformRandom(unsigned int max_value) {
 
 double Distance(const Point& point1, const Point& point2) {
     double distance_sqr = 0;
-    size_t dimensions = point1.size();
-    for (size_t i = 0; i < dimensions; ++i) {
+    size_t dim = point1.size();
+    for (size_t i = 0; i < dim; ++i) {
         distance_sqr += (point1[i] - point2[i]) * (point1[i] - point2[i]);
     }
     return sqrt(distance_sqr);
@@ -48,9 +51,9 @@ Point GetRandomPosition(const Points& centroids) {
     int c1 = rand() % K;
     int c2 = rand() % K;
     int c3 = rand() % K;
-    size_t dimensions = centroids[0].size();
-    Point new_position(dimensions);
-    for (size_t d = 0; d < dimensions; ++d) {
+    size_t dim = centroids[0].size();
+    Point new_position(dim);
+    for (size_t d = 0; d < dim; ++d) {
         new_position[d] = (centroids[c1][d] + centroids[c2][d] + centroids[c3][d]) / 3;
     }
     return new_position;
@@ -58,58 +61,99 @@ Point GetRandomPosition(const Points& centroids) {
 
 vector<size_t> KMeans(const Points& data, size_t K) {
     size_t data_size = data.size();
-    size_t dimensions = data[0].size();
+    size_t dim = data[0].size();
     vector<size_t> clusters(data_size);
 
-    // Initialize centroids randomly at data points
+    // Initialize randomly
     Points centroids(K);
     for (size_t i = 0; i < K; ++i) {
         centroids[i] = data[UniformRandom(data_size - 1)];
     }
     
-    bool converged = false;
-    while (!converged) {
-        converged = true;
-        for (size_t i = 0; i < data_size; ++i) {
-            size_t nearest_cluster = FindNearestCentroid(centroids, data[i]);
-            if (clusters[i] != nearest_cluster) {
-                clusters[i] = nearest_cluster;
-                converged = false;
+    int nthreads = omp_get_max_threads();
+    
+    /*
+    Each thread calculates new centroids using a private space,
+    then thread 0 does an array reduction on them. */
+    vector<Point> local_new_cluster_size(nthreads);
+    local_new_cluster_size.assign(nthreads, Point(K));
+    
+    vector<Points> local_new_centroids(nthreads);
+    local_new_centroids.assign(nthreads, Points(K));
+    for (int i = 0; i < nthreads; i++)
+    	local_new_centroids[i].assign(K, Point(dim));
+    
+    vector<size_t> new_cluster_size(K);
+    
+    Points new_centroids(K);
+    new_centroids.assign(K, Point(dim));
+    
+    int points_moved;
+    do {
+    	points_moved = 0;
+    	
+    	#pragma omp parallel shared(data,clusters,centroids,local_new_centroids,local_new_cluster_size)
+		{
+			int tid = omp_get_thread_num();
+			
+			#pragma omp for firstprivate(data_size,K,dim) schedule(static) reduction(+:points_moved)
+			for (size_t i = 0; i < data_size; ++i) 
+			{
+				size_t nearest_cluster = FindNearestCentroid(centroids, data[i]);
+				if (clusters[i] != nearest_cluster) 
+				{
+                	clusters[i] = nearest_cluster;
+                	points_moved++;
+				}
+				
+				local_new_cluster_size[tid][nearest_cluster]++;
+				for (size_t d = 0; d < dim; ++d)
+					local_new_centroids[tid][nearest_cluster][d] += data[i][d];
+					
+					
             }
-        }
-        if (converged) {
-            break;
-        }
+		}
+		
+		/* let the main thread perform the array reduction */
+		for (size_t i = 0; i < K; i++) {
+			for (int j = 0; j < nthreads; j++) {
+				new_cluster_size[i] += local_new_cluster_size[j][i];
+				local_new_cluster_size[j][i] = 0.0;
+				for (size_t d = 0; d < dim; d++) {
+					new_centroids[i][d] += local_new_centroids[j][i][d];
+					local_new_centroids[j][i][d] = 0.0;
+				}
+			}
+		}
 
-        vector<size_t> clusters_sizes(K);
-        centroids.assign(K, Point(dimensions));
-        for (size_t i = 0; i < data_size; ++i) {
-            for (size_t d = 0; d < dimensions; ++d) {
-                centroids[clusters[i]][d] += data[i][d];
-            }
-            ++clusters_sizes[clusters[i]];
-        }
-        for (size_t i = 0; i < K; ++i) {
-            if (clusters_sizes[i] != 0) {
-                for (size_t d = 0; d < dimensions; ++d) {
-                    centroids[i][d] /= clusters_sizes[i];
-                }
-            } else {
+		/* average the sum and replace old centroids with newCentroids */
+		for (size_t i = 0; i < K; ++i) 
+		{
+            if (new_cluster_size[i] > 1)
+            {
+                for (size_t d = 0; d < dim; ++d)
+                    centroids[i][d] = new_centroids[i][d] / new_cluster_size[i];
+            } 
+            else 
+            {
                 centroids[i] = GetRandomPosition(centroids);
             }
         }
-    }
+        new_cluster_size.assign(K, 0);
+        new_centroids.assign(K, Point(dim));
+	
+    } while (points_moved > 0);
 
     return clusters;
 }
 
 void ReadPoints(Points* data, ifstream& input) {
     size_t data_size;
-    size_t dimensions;
-    input >> data_size >> dimensions;
-    data->assign(data_size, Point(dimensions));
+    size_t dim;
+    input >> data_size >> dim;
+    data->assign(data_size, Point(dim));
     for (size_t i = 0; i < data_size; ++i) {
-        for (size_t d = 0; d < dimensions; ++d) {
+        for (size_t d = 0; d < dim; ++d) {
             double coord;
             input >> coord;
             (*data)[i][d] = coord;
@@ -125,16 +169,17 @@ void WriteOutput(const vector<size_t>& clusters, ofstream& output) {
 
 int main(int argc , char** argv) {
     if (argc != 4) {
-        std::printf("Usage: %s number_of_clusters input_file output_file\n", argv[0]);
+        cerr << "Usage: " << argv[0] << "number_of_clusters in_file out_file" << endl;
         return 1;
     }
     size_t K = atoi(argv[1]);
 
     char* input_file = argv[2];
+
     ifstream input;
     input.open(input_file, ifstream::in);
     if(!input) {
-        cerr << "Error: input file could not be opened" << endl;
+        cerr << "Error: open(in_file) error" << endl;
         return 1;
     }
     
@@ -148,11 +193,11 @@ int main(int argc , char** argv) {
     ofstream output;
     output.open(output_file, ifstream::out);
     if(!output) {
-        cerr << "Error: output file could not be opened" << endl;
+        cerr << "Error: open(out_file) error" << endl;
         return 1;
     }
 
-    srand(123); // for reproducible results
+    srand(228); // for reproducible results
 
     vector<size_t> clusters = KMeans(data, K);
 
