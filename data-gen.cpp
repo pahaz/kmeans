@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <time.h>
+#include <stdlib.h>
 
 using namespace std;
 
@@ -69,7 +70,7 @@ int main(int argc , char** argv) {
     size_t number_of_clusters = atoi(argv[3]); // 0..32767
     
     string output_file = argv[4];
-    ofstream output(output_file);
+    ofstream output(output_file.c_str());
     if(!output.is_open()) {
         cerr << "Error: output file could not be opened" << endl;
         return 1;
