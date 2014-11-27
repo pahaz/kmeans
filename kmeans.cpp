@@ -1,11 +1,14 @@
 #include <cmath>
 #include <iostream>
 #include <fstream>
+#include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#include <sys/time.h>
 
 using namespace std;
 
+struct timeval start, stop;
 typedef vector<double> Point;
 typedef vector<Point> Points;
 
@@ -134,6 +137,8 @@ int main(int argc , char** argv) {
         cerr << "Error: input file could not be opened" << endl;
         return 1;
     }
+    
+    gettimeofday(&start, NULL);
 
     Points data;
     ReadPoints(&data, input);
@@ -153,6 +158,12 @@ int main(int argc , char** argv) {
 
     WriteOutput(clusters, output);
     output.close();
+    
+    gettimeofday(&stop, NULL);
+    
+    double duration = (double)(stop.tv_sec - start.tv_sec + (stop.tv_usec - start.tv_usec)/1000000.0);
+    
+    printf("Duration: %f seconds\n", duration);
 
     return 0;
 }
